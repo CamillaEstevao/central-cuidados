@@ -1,0 +1,14 @@
+.gitignore
+README.md
+client/index.html
+client/package.json
+client/src/App.jsx
+client/src/api.js
+client/src/components/Modal.jsx
+client/src/main.jsx
+client/src/styles.css
+client/vite.config.js
+package.json
+server/db.js
+server/index.js
+server/package.json
