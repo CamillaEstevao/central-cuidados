@@ -217,7 +217,7 @@ function CareApp({ user }) {
       {nav.map(([id,label,Icon]) => <button key={id} className={tab===id?"active":""} onClick={()=>setTab(id)}><Icon size={20}/><span>{label}</span></button>)}
     </nav>
 
-    {modal?.type==="appointment" && <AppointmentModal onClose={()=>setModal(null)} reload={load}/>}
+    {modal?.type==="appointment" && <AppointmentModal item={modal.item} onClose={()=>setModal(null)} reload={load}/>}
     {modal?.type==="expense" && <ExpenseModal onClose={()=>setModal(null)} reload={load}/>}
     {modal?.type==="reminder" && <ReminderModal onClose={()=>setModal(null)} reload={load}/>}
     {modal?.type==="medication" && <MedicationModal item={modal.item} onClose={()=>setModal(null)} reload={load}/>}
@@ -276,14 +276,117 @@ function Metric({icon,value,label}) { return <div className="metric"><div classN
 function Quick({icon,label,onClick}) { return <button className="quick" onClick={onClick}>{icon}<span>{label}</span></button>; }
 
 function AppointmentsPage({ items, reload, setModal }) {
-  const complete = async id => { await update("appointments",id,{status:"completed"}); reload(); };
+  const complete = async x => {
+    await update("appointments", x.id, { status:"completed" });
+    reload();
+  };
+
+  const reopen = async x => {
+    await update("appointments", x.id, {
+      status:"upcoming",
+      notification_sent:false
+    });
+    reload();
+  };
+
+  const removeAppointment = async x => {
+    const confirmed = window.confirm(
+      `Excluir a consulta "${x.title}"?\n\nEssa ação não pode ser desfeita.`
+    );
+
+    if (!confirmed) return;
+
+    const { error } = await supabase
+      .from("appointments")
+      .delete()
+      .eq("id", x.id);
+
+    if (error) {
+      window.alert("Não foi possível excluir a consulta: " + error.message);
+      return;
+    }
+
+    reload();
+  };
+
   return <section>
-    <div className="section-title"><div><h1>Consultas e exames</h1><p>Próximos compromissos e histórico.</p></div><button className="primary" onClick={()=>setModal({type:"appointment"})}><Plus size={18}/>Adicionar</button></div>
-    <div className="list">{items.length===0?<Empty text="Nenhuma consulta cadastrada."/>:items.map(x=><div className="list-card" key={x.id}>
-      <div className="date-tile"><b>{fmtDate(x.date).split(" ")[0]}</b><span>{fmtDate(x.date).split(" ")[1]}</span></div>
-      <div className="grow"><strong>{x.title}</strong><span>{x.time||"Horário a confirmar"} {x.professional?`• ${x.professional}`:""}</span><small>{x.place||x.address||""}</small></div>
-      {x.status==="upcoming"&&<button className="soft success" onClick={()=>complete(x.id)}><Check size={16}/></button>}
-    </div>)}</div>
+    <div className="section-title">
+      <div>
+        <h1>Consultas e exames</h1>
+        <p>Próximos compromissos e histórico.</p>
+      </div>
+      <button className="primary" onClick={()=>setModal({type:"appointment"})}>
+        <Plus size={18}/>Adicionar
+      </button>
+    </div>
+
+    <div className="list">
+      {items.length===0 ? <Empty text="Nenhuma consulta cadastrada."/> : items.map(x =>
+        <div className="list-card" key={x.id}>
+          <div className="date-tile">
+            <b>{fmtDate(x.date).split(" ")[0]}</b>
+            <span>{fmtDate(x.date).split(" ")[1]}</span>
+          </div>
+
+          <div className="grow">
+            <strong>{x.title}</strong>
+            <span>
+              {x.time || "Horário a confirmar"}
+              {x.professional ? ` • ${x.professional}` : ""}
+            </span>
+            <small>{x.place || x.address || ""}</small>
+          </div>
+
+          <div style={{display:"flex",gap:"6px",alignItems:"center",flexWrap:"wrap",justifyContent:"flex-end"}}>
+            <button
+              type="button"
+              className="soft"
+              onClick={()=>setModal({type:"appointment",item:x})}
+            >
+              Editar
+            </button>
+
+            {x.status==="upcoming" ? (
+              <button
+                type="button"
+                className="soft success"
+                title="Marcar como realizada"
+                onClick={()=>complete(x)}
+              >
+                <Check size={16}/>
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="soft"
+                onClick={()=>reopen(x)}
+              >
+                Reabrir
+              </button>
+            )}
+
+            <button
+              type="button"
+              title="Excluir consulta"
+              aria-label={`Excluir consulta ${x.title}`}
+              onClick={()=>removeAppointment(x)}
+              style={{
+                width:"38px",
+                height:"38px",
+                border:"1px solid #f1d7d9",
+                borderRadius:"10px",
+                background:"#fff5f5",
+                color:"#c94a54",
+                display:"grid",
+                placeItems:"center"
+              }}
+            >
+              <Trash2 size={17}/>
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   </section>;
 }
 
@@ -461,17 +564,130 @@ function MorePage({ reminders, history, reload, setModal }) {
 
 function Empty({text}) { return <div className="empty">{text}</div>; }
 
-function AppointmentModal({onClose,reload}) {
-  const [f,setF]=useState({title:"",specialty:"",professional:"",place:"",address:"",date:today(),time:"",notes:"",status:"upcoming", remind_minutes_before:1440});
-  const save=async e=>{e.preventDefault();await insert("appointments",f);reload();onClose();};
-  return <Modal title="Nova consulta / exame" onClose={onClose}><form onSubmit={save} className="form">
-    <label>Título<input required value={f.title} onChange={e=>setF({...f,title:e.target.value})} placeholder="Ex.: Cardiologista"/></label>
-    <div className="form-row"><label>Data<input required type="date" value={f.date} onChange={e=>setF({...f,date:e.target.value})}/></label><label>Horário<input type="time" value={f.time} onChange={e=>setF({...f,time:e.target.value})}/></label></div>
-    <label>Profissional<input value={f.professional} onChange={e=>setF({...f,professional:e.target.value})}/></label>
-    <label>Local<input value={f.place} onChange={e=>setF({...f,place:e.target.value})}/></label>
-    <label>Avisar antes<select value={f.remind_minutes_before} onChange={e=>setF({...f,remind_minutes_before:Number(e.target.value)})}><option value="60">1 hora</option><option value="1440">1 dia</option><option value="10080">7 dias</option></select></label>
-    <button className="primary wide">Salvar consulta</button>
-  </form></Modal>;
+function AppointmentModal({item,onClose,reload}) {
+  const [f,setF]=useState({
+    title:item?.title||"",
+    specialty:item?.specialty||"",
+    professional:item?.professional||"",
+    place:item?.place||"",
+    address:item?.address||"",
+    date:item?.date||today(),
+    time:item?.time||"",
+    notes:item?.notes||"",
+    status:item?.status||"upcoming",
+    remind_minutes_before:item?.remind_minutes_before ?? 1440
+  });
+
+  const save = async e => {
+    e.preventDefault();
+
+    const body = {
+      ...f,
+      remind_minutes_before:Number(f.remind_minutes_before),
+      notification_sent:false
+    };
+
+    if (item) {
+      await update("appointments", item.id, body);
+    } else {
+      await insert("appointments", body);
+    }
+
+    reload();
+    onClose();
+  };
+
+  return <Modal title={item ? "Editar consulta / exame" : "Nova consulta / exame"} onClose={onClose}>
+    <form onSubmit={save} className="form">
+      <label>
+        Título
+        <input
+          required
+          value={f.title}
+          onChange={e=>setF({...f,title:e.target.value})}
+          placeholder="Ex.: Cardiologista"
+        />
+      </label>
+
+      <div className="form-row">
+        <label>
+          Data
+          <input
+            required
+            type="date"
+            value={f.date}
+            onChange={e=>setF({...f,date:e.target.value})}
+          />
+        </label>
+
+        <label>
+          Horário
+          <input
+            type="time"
+            value={f.time}
+            onChange={e=>setF({...f,time:e.target.value})}
+          />
+        </label>
+      </div>
+
+      <label>
+        Profissional
+        <input
+          value={f.professional}
+          onChange={e=>setF({...f,professional:e.target.value})}
+        />
+      </label>
+
+      <label>
+        Especialidade
+        <input
+          value={f.specialty}
+          onChange={e=>setF({...f,specialty:e.target.value})}
+        />
+      </label>
+
+      <label>
+        Local
+        <input
+          value={f.place}
+          onChange={e=>setF({...f,place:e.target.value})}
+        />
+      </label>
+
+      <label>
+        Endereço
+        <input
+          value={f.address}
+          onChange={e=>setF({...f,address:e.target.value})}
+        />
+      </label>
+
+      <label>
+        Observações
+        <textarea
+          value={f.notes}
+          onChange={e=>setF({...f,notes:e.target.value})}
+        />
+      </label>
+
+      <label>
+        Avisar
+        <select
+          value={f.remind_minutes_before}
+          onChange={e=>setF({...f,remind_minutes_before:Number(e.target.value)})}
+        >
+          <option value="0">No horário</option>
+          <option value="60">1 hora antes</option>
+          <option value="1440">1 dia antes</option>
+          <option value="10080">7 dias antes</option>
+        </select>
+      </label>
+
+      <button className="primary wide">
+        {item ? "Salvar alterações" : "Salvar consulta"}
+      </button>
+    </form>
+  </Modal>;
 }
 
 function ExpenseModal({onClose,reload}) {
