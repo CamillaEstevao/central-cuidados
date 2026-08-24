@@ -3,24 +3,14 @@ import { adminSupabase } from "./_supabase.js";
 
 const TIMEZONE = "America/Sao_Paulo";
 
-/**
- * Converte uma data + hora cadastrada no horário de São Paulo
- * para um Date UTC correto.
- *
- * Exemplo:
- * 2026-08-23 + 20:56 em São Paulo
- * vira aproximadamente 2026-08-23T23:56:00Z
- */
 function saoPauloDateTime(date, time) {
   const [year, month, day] = date.split("-").map(Number);
   const [hour, minute, second = 0] = time.split(":").map(Number);
 
-  // Primeiro criamos uma referência UTC.
   const guess = new Date(
     Date.UTC(year, month - 1, day, hour, minute, second)
   );
 
-  // Descobrimos como esse instante aparece em São Paulo.
   const formatter = new Intl.DateTimeFormat("en-US", {
     timeZone: TIMEZONE,
     year: "numeric",
@@ -62,6 +52,24 @@ function saoPauloDateTime(date, time) {
   return new Date(desiredAsUTC - offset);
 }
 
+function saoPauloToday(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  });
+
+  const parts = Object.fromEntries(
+    formatter
+      .formatToParts(date)
+      .filter(p => p.type !== "literal")
+      .map(p => [p.type, p.value])
+  );
+
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
 export default async function handler(req, res) {
   try {
     const supabase = adminSupabase();
@@ -85,15 +93,6 @@ export default async function handler(req, res) {
 
     const now = new Date();
 
-    /*
-     * Aceitamos avisos que deveriam ter sido enviados
-     * até 10 minutos atrás.
-     *
-     * Também verificamos os próximos 16 minutos.
-     *
-     * Assim uma pequena demora na execução não faz
-     * o sistema perder a notificação.
-     */
     const windowStart = new Date(
       now.getTime() - 10 * 60 * 1000
     );
@@ -101,6 +100,10 @@ export default async function handler(req, res) {
     const windowEnd = new Date(
       now.getTime() + 16 * 60 * 1000
     );
+
+    // =========================
+    // LEMBRETES
+    // =========================
 
     const { data: reminders, error: remErr } =
       await supabase
@@ -111,6 +114,10 @@ export default async function handler(req, res) {
 
     if (remErr) throw remErr;
 
+    // =========================
+    // CONSULTAS
+    // =========================
+
     const { data: appointments, error: appErr } =
       await supabase
         .from("appointments")
@@ -120,11 +127,22 @@ export default async function handler(req, res) {
 
     if (appErr) throw appErr;
 
+    // =========================
+    // MEDICAMENTOS
+    // =========================
+
+    const { data: medications, error: medErr } =
+      await supabase
+        .from("medications")
+        .select("*");
+
+    if (medErr) throw medErr;
+
     const due = [];
 
-    // -------------------------
-    // LEMBRETES
-    // -------------------------
+    // =========================
+    // VERIFICAR LEMBRETES
+    // =========================
 
     for (const r of reminders || []) {
       if (!r.due_date || !r.due_time) continue;
@@ -139,7 +157,7 @@ export default async function handler(req, res) {
 
       const notifyAt = new Date(
         when.getTime() -
-          minutesBefore * 60 * 1000
+        minutesBefore * 60 * 1000
       );
 
       if (
@@ -147,6 +165,7 @@ export default async function handler(req, res) {
         notifyAt <= windowEnd
       ) {
         due.push({
+          type: "reminder",
           table: "reminders",
           item: r,
           notifyAt,
@@ -157,9 +176,9 @@ export default async function handler(req, res) {
       }
     }
 
-    // -------------------------
-    // CONSULTAS
-    // -------------------------
+    // =========================
+    // VERIFICAR CONSULTAS
+    // =========================
 
     for (const a of appointments || []) {
       if (!a.date || !a.time) continue;
@@ -174,7 +193,7 @@ export default async function handler(req, res) {
 
       const notifyAt = new Date(
         when.getTime() -
-          minutesBefore * 60 * 1000
+        minutesBefore * 60 * 1000
       );
 
       if (
@@ -182,6 +201,7 @@ export default async function handler(req, res) {
         notifyAt <= windowEnd
       ) {
         due.push({
+          type: "appointment",
           table: "appointments",
           item: a,
           notifyAt,
@@ -194,28 +214,93 @@ export default async function handler(req, res) {
       }
     }
 
+    // =========================
+    // VERIFICAR MEDICAMENTOS
+    // =========================
+
+    const todaySP = saoPauloToday(now);
+
+    for (const m of medications || []) {
+      const schedule =
+        Array.isArray(m.schedule)
+          ? m.schedule
+          : [];
+
+      for (const time of schedule) {
+        if (!time) continue;
+
+        const notifyAt =
+          saoPauloDateTime(todaySP, time);
+
+        if (
+          notifyAt < windowStart ||
+          notifyAt > windowEnd
+        ) {
+          continue;
+        }
+
+        const scheduledAt =
+          notifyAt.toISOString();
+
+        // Verifica se esse medicamento
+        // já teve aviso nesse horário hoje.
+        const {
+          data: alreadySent,
+          error: checkError
+        } = await supabase
+          .from("medication_notification_logs")
+          .select("id")
+          .eq("medication_id", m.id)
+          .eq("scheduled_at", scheduledAt)
+          .limit(1);
+
+        if (checkError) throw checkError;
+
+        if (
+          alreadySent &&
+          alreadySent.length > 0
+        ) {
+          continue;
+        }
+
+        due.push({
+          type: "medication",
+          item: m,
+          notifyAt,
+          scheduledAt,
+          title: "💊 Hora do medicamento",
+          body:
+            `${m.name}` +
+            `${m.dose ? ` • ${m.dose}` : ""}`,
+          url: "/"
+        });
+      }
+    }
+
     let sent = 0;
     let failed = 0;
 
     const results = [];
 
-    // -------------------------
-    // ENVIO PUSH
-    // -------------------------
+    // =========================
+    // ENVIAR NOTIFICAÇÕES
+    // =========================
 
     for (const d of due) {
-      const { data: subscriptions, error: subError } =
-        await supabase
-          .from("push_subscriptions")
-          .select("*")
-          .eq("user_id", d.item.user_id);
+      const {
+        data: subscriptions,
+        error: subError
+      } = await supabase
+        .from("push_subscriptions")
+        .select("*")
+        .eq("user_id", d.item.user_id);
 
       if (subError) {
         failed++;
 
         results.push({
           id: d.item.id,
-          type: d.table,
+          type: d.type,
           sent: 0,
           error: subError.message
         });
@@ -225,16 +310,25 @@ export default async function handler(req, res) {
 
       let sentForThisItem = 0;
 
-      for (const subscription of subscriptions || []) {
+      for (
+        const subscription
+        of subscriptions || []
+      ) {
         try {
           await webpush.sendNotification(
             {
-              endpoint: subscription.endpoint,
+              endpoint:
+                subscription.endpoint,
+
               keys: {
-                p256dh: subscription.p256dh,
-                auth: subscription.auth
+                p256dh:
+                  subscription.p256dh,
+
+                auth:
+                  subscription.auth
               }
             },
+
             JSON.stringify({
               title: d.title,
               body: d.body,
@@ -244,13 +338,10 @@ export default async function handler(req, res) {
 
           sent++;
           sentForThisItem++;
+
         } catch (error) {
           failed++;
 
-          /*
-           * 404 / 410 significa que a assinatura
-           * daquele aparelho não é mais válida.
-           */
           if (
             error.statusCode === 404 ||
             error.statusCode === 410
@@ -272,33 +363,69 @@ export default async function handler(req, res) {
         }
       }
 
-      /*
-       * Só marcamos como enviado se pelo menos
-       * um aparelho realmente recebeu o push.
-       *
-       * Se não houver assinatura, continua false
-       * para poder tentar novamente.
-       */
-      if (sentForThisItem > 0) {
-        const { error: updateError } =
-          await supabase
-            .from(d.table)
-            .update({
-              notification_sent: true
-            })
-            .eq("id", d.item.id);
+      // =========================
+      // REGISTRAR COMO ENVIADO
+      // =========================
 
-        if (updateError) {
-          console.error(
-            "Erro ao marcar notificação:",
-            updateError.message
-          );
+      if (sentForThisItem > 0) {
+
+        // MEDICAMENTO
+        if (d.type === "medication") {
+
+          const { error: logError } =
+            await supabase
+              .from(
+                "medication_notification_logs"
+              )
+              .insert({
+                user_id:
+                  d.item.user_id,
+
+                medication_id:
+                  d.item.id,
+
+                medication_name:
+                  d.item.name,
+
+                scheduled_at:
+                  d.scheduledAt,
+
+                sent_at:
+                  new Date().toISOString()
+              });
+
+          if (logError) {
+            console.error(
+              "Erro ao registrar aviso:",
+              logError.message
+            );
+          }
+
+        }
+
+        // LEMBRETE / CONSULTA
+        else {
+
+          const { error: updateError } =
+            await supabase
+              .from(d.table)
+              .update({
+                notification_sent: true
+              })
+              .eq("id", d.item.id);
+
+          if (updateError) {
+            console.error(
+              "Erro ao marcar notificação:",
+              updateError.message
+            );
+          }
         }
       }
 
       results.push({
         id: d.item.id,
-        type: d.table,
+        type: d.type,
         scheduledFor:
           d.notifyAt.toISOString(),
         sent: sentForThisItem
@@ -308,17 +435,27 @@ export default async function handler(req, res) {
     return res.status(200).json({
       ok: true,
       timezone: TIMEZONE,
-      serverTime: now.toISOString(),
+      serverTime:
+        now.toISOString(),
+
       windowStart:
         windowStart.toISOString(),
+
       windowEnd:
         windowEnd.toISOString(),
-      due: due.length,
+
+      due:
+        due.length,
+
       sent,
+
       failed,
+
       results
     });
+
   } catch (error) {
+
     console.error(error);
 
     return res.status(500).json({
