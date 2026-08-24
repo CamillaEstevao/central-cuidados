@@ -208,7 +208,7 @@ function CareApp({ user }) {
     <main className="page">
       {tab==="home" && <HomePage {...{dashboard,medications,setTab,setModal}}/>}
       {tab==="appointments" && <AppointmentsPage items={appointments} reload={load} setModal={setModal}/>}
-      {tab==="medications" && <MedicationsPage items={medications} reload={load} setModal={setModal} notify={notify}/>}
+      {tab==="medications" && <MedicationsPage items={medications} logs={logs} reload={load} setModal={setModal} notify={notify}/>}
       {tab==="expenses" && <ExpensesPage items={expenses} setModal={setModal}/>}
       {tab==="more" && <MorePage reminders={reminders} history={history} reload={load} setModal={setModal}/>}
     </main>
@@ -390,19 +390,92 @@ function AppointmentsPage({ items, reload, setModal }) {
   </section>;
 }
 
-function MedicationsPage({ items, reload, setModal, notify }) {
+function MedicationsPage({ items, logs, reload, setModal, notify }) {
   const [glucose,setGlucose] = useState("");
 
-  const take = async (m,time) => {
-    await insert("medication_logs",{
-      medication_id:m.id,
-      medication_name:m.name,
-      scheduled_at:`${today()}T${time}:00`,
-      taken_at:new Date().toISOString(),
-      status:"taken"
+  const localDateKey = date => {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone:"America/Sao_Paulo",
+      year:"numeric",
+      month:"2-digit",
+      day:"2-digit"
+    }).format(date);
+  };
+
+  const todaySP = localDateKey(new Date());
+
+  const isTaken = (medicationId, time) => {
+    return (logs || []).some(log => {
+      if (log.medication_id !== medicationId) return false;
+      if (!log.scheduled_at) return false;
+
+      const d = new Date(log.scheduled_at);
+
+      const logDate = localDateKey(d);
+
+      const logTime = new Intl.DateTimeFormat("pt-BR", {
+        timeZone:"America/Sao_Paulo",
+        hour:"2-digit",
+        minute:"2-digit",
+        hourCycle:"h23"
+      }).format(d);
+
+      return logDate === todaySP && logTime === time;
     });
+  };
+
+  const take = async (m,time) => {
+    if (isTaken(m.id,time)) {
+      notify(`${m.name}: esta dose já foi marcada como tomada.`);
+      return;
+    }
+
+    const scheduledAt = new Date(`${todaySP}T${time}:00-03:00`).toISOString();
+
+    const { error } = await supabase
+      .from("medication_logs")
+      .insert({
+        medication_id:m.id,
+        medication_name:m.name,
+        scheduled_at:scheduledAt,
+        taken_at:new Date().toISOString(),
+        status:"taken"
+      });
+
+    if (error) {
+      if (error.code === "23505") {
+        notify(`${m.name}: esta dose já foi marcada como tomada.`);
+        reload();
+        return;
+      }
+
+      notify("Erro ao registrar medicamento: " + error.message);
+      return;
+    }
 
     notify(`${m.name}: registrado como tomado.`);
+    reload();
+  };
+
+  const toggleNotifications = async m => {
+    const nextValue = !(m.notifications_enabled ?? true);
+
+    const { error } = await supabase
+      .from("medications")
+      .update({ notifications_enabled:nextValue })
+      .eq("id",m.id);
+
+    if (error) {
+      notify("Erro ao alterar avisos: " + error.message);
+      return;
+    }
+
+    notify(
+      nextValue
+        ? `${m.name}: avisos ativados.`
+        : `${m.name}: avisos desativados.`
+    );
+
     reload();
   };
 
@@ -416,7 +489,7 @@ function MedicationsPage({ items, reload, setModal, notify }) {
     const { error } = await supabase
       .from("medications")
       .delete()
-      .eq("id", m.id);
+      .eq("id",m.id);
 
     if (error) {
       window.alert("Não foi possível excluir o medicamento: " + error.message);
@@ -495,7 +568,18 @@ function MedicationsPage({ items, reload, setModal, notify }) {
               <small>{m.prescription_text}</small>
             </div>
 
-            <div style={{display:"flex",gap:"6px",alignItems:"center"}}>
+            <div style={{display:"flex",gap:"6px",alignItems:"center",flexWrap:"wrap",justifyContent:"flex-end"}}>
+              <button
+                type="button"
+                className="soft"
+                onClick={()=>toggleNotifications(m)}
+                title={(m.notifications_enabled ?? true) ? "Desativar avisos" : "Ativar avisos"}
+                style={{display:"flex",alignItems:"center",gap:"6px"}}
+              >
+                <Bell size={16}/>
+                {(m.notifications_enabled ?? true) ? "Avisos on" : "Avisos off"}
+              </button>
+
               <button
                 className="soft"
                 onClick={()=>setModal({type:"medication",item:m})}
@@ -524,18 +608,32 @@ function MedicationsPage({ items, reload, setModal, notify }) {
             </div>
           </div>
 
-          {Array.isArray(m.schedule)&&m.schedule.length ? (
+          {Array.isArray(m.schedule) && m.schedule.length ? (
             <div className="schedule-row">
-              {m.schedule.map(t=>(
-                <button
-                  key={t}
-                  onClick={()=>take(m,t)}
-                >
-                  <Clock3 size={15}/>
-                  {t}
-                  <span>Marcar como tomado</span>
-                </button>
-              ))}
+              {m.schedule.map(t=>{
+                const taken = isTaken(m.id,t);
+
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    disabled={taken}
+                    onClick={()=>take(m,t)}
+                    style={taken ? {
+                      opacity:.72,
+                      cursor:"default",
+                      background:"#edf9f2",
+                      borderColor:"#bfe5ce"
+                    } : undefined}
+                  >
+                    {taken ? <Check size={15}/> : <Clock3 size={15}/>}
+                    {t}
+                    <span>
+                      {taken ? "Tomado" : "Marcar como tomado"}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           ) : (
             <div className="needs-confirm">
@@ -543,6 +641,21 @@ function MedicationsPage({ items, reload, setModal, notify }) {
               Defina os horários reais deste medicamento.
             </div>
           )}
+
+          <div style={{
+            marginTop:"10px",
+            fontSize:"13px",
+            color:(m.notifications_enabled ?? true) ? "#17835c" : "#8a8f9c",
+            display:"flex",
+            alignItems:"center",
+            gap:"6px"
+          }}>
+            <Bell size={14}/>
+            {(m.notifications_enabled ?? true)
+              ? "Notificações deste medicamento ativadas"
+              : "Notificações deste medicamento desativadas"
+            }
+          </div>
 
           {m.stock!==null && (
             <div className="stock">
