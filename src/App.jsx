@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Home, CalendarDays, Pill, Wallet, Bell, Plus, Check, Clock3, History,
-  Syringe, Droplets, AlertTriangle, ChevronRight, LogOut, Smartphone
+  Syringe, Droplets, AlertTriangle, ChevronRight, LogOut, Smartphone, Trash2
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 import { list, insert, update } from "./lib/db";
@@ -343,12 +343,118 @@ function ExpensesPage({ items, setModal }) {
 }
 
 function MorePage({ reminders, history, reload, setModal }) {
-  const toggle = async r => { await update("reminders",r.id,{status:r.status==="completed"?"pending":"completed"}); reload(); };
+  const toggle = async r => {
+    const nextStatus = r.status === "completed" ? "pending" : "completed";
+
+    await update("reminders", r.id, {
+      status: nextStatus,
+      ...(nextStatus === "pending" ? { notification_sent: false } : {})
+    });
+
+    reload();
+  };
+
+  const removeReminder = async r => {
+    const confirmed = window.confirm(
+      `Excluir o lembrete "${r.title}"?\n\nEssa ação não pode ser desfeita.`
+    );
+
+    if (!confirmed) return;
+
+    const { error } = await supabase
+      .from("reminders")
+      .delete()
+      .eq("id", r.id);
+
+    if (error) {
+      window.alert("Não foi possível excluir o lembrete: " + error.message);
+      return;
+    }
+
+    reload();
+  };
+
   return <section>
-    <div className="section-title"><div><h1>Lembretes e histórico</h1><p>Pendências e tudo que já foi registrado.</p></div><button className="primary" onClick={()=>setModal({type:"reminder"})}><Plus size={18}/>Lembrete</button></div>
+    <div className="section-title">
+      <div>
+        <h1>Lembretes e histórico</h1>
+        <p>Pendências e tudo que já foi registrado.</p>
+      </div>
+
+      <button
+        className="primary"
+        onClick={() => setModal({type:"reminder"})}
+      >
+        <Plus size={18}/>
+        Lembrete
+      </button>
+    </div>
+
     <div className="two-col">
-      <div><h2 className="mini-title">Lembretes</h2><div className="list">{reminders.length===0?<Empty text="Nenhum lembrete."/>:reminders.map(r=><button className={`reminder ${r.status==="completed"?"done":""}`} key={r.id} onClick={()=>toggle(r)}><span className="check-circle">{r.status==="completed"?<Check size={15}/>:null}</span><div><strong>{r.title}</strong><span>{fmtFull(r.due_date)} {r.due_time||""}</span></div></button>)}</div></div>
-      <div><h2 className="mini-title">Histórico</h2><div className="timeline">{history.length===0?<Empty text="O histórico aparecerá aqui."/>:history.map((h,i)=><div className="timeline-item" key={i}><div className="dot"/><div><strong>{h.title}</strong><span>{h.subtitle}</span><small>{fmtFull(h.date)}</small></div></div>)}</div></div>
+      <div>
+        <h2 className="mini-title">Lembretes</h2>
+
+        <div className="list">
+          {reminders.length === 0 ? (
+            <Empty text="Nenhum lembrete."/>
+          ) : (
+            reminders.map(r => (
+              <div
+                className={`reminder ${r.status === "completed" ? "done" : ""}`}
+                key={r.id}
+                style={{ display:"flex", alignItems:"center", gap:"10px" }}
+              >
+                <button
+                  type="button"
+                  onClick={() => toggle(r)}
+                  style={{ flex:1, border:0, background:"transparent", padding:0, display:"flex", alignItems:"center", gap:"11px", textAlign:"left", color:"inherit" }}
+                  aria-label={r.status === "completed" ? "Marcar lembrete como pendente" : "Marcar lembrete como concluído"}
+                >
+                  <span className="check-circle">
+                    {r.status === "completed" ? <Check size={15}/> : null}
+                  </span>
+
+                  <div>
+                    <strong>{r.title}</strong>
+                    <span>{fmtFull(r.due_date)} {r.due_time || ""}</span>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => removeReminder(r)}
+                  title="Excluir lembrete"
+                  aria-label={`Excluir lembrete ${r.title}`}
+                  style={{ width:"38px", height:"38px", border:"1px solid #f1d7d9", borderRadius:"10px", background:"#fff5f5", color:"#c94a54", display:"grid", placeItems:"center", flex:"0 0 auto" }}
+                >
+                  <Trash2 size={17}/>
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div>
+        <h2 className="mini-title">Histórico</h2>
+
+        <div className="timeline">
+          {history.length === 0 ? (
+            <Empty text="O histórico aparecerá aqui."/>
+          ) : (
+            history.map((h,i) => (
+              <div className="timeline-item" key={i}>
+                <div className="dot"/>
+                <div>
+                  <strong>{h.title}</strong>
+                  <span>{h.subtitle}</span>
+                  <small>{fmtFull(h.date)}</small>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
     </div>
   </section>;
 }
@@ -381,12 +487,37 @@ function ExpenseModal({onClose,reload}) {
 }
 
 function ReminderModal({onClose,reload}) {
-  const [f,setF]=useState({title:"",due_date:today(),due_time:"",notes:"",status:"pending",remind_minutes_before:60});
+  const [f,setF]=useState({
+  title:"",
+  due_date:today(),
+  due_time:"",
+  notes:"",
+  status:"pending",
+  remind_minutes_before:0
+});
   const save=async e=>{e.preventDefault();await insert("reminders",f);reload();onClose();};
   return <Modal title="Novo lembrete" onClose={onClose}><form onSubmit={save} className="form">
     <label>Lembrete<input required value={f.title} onChange={e=>setF({...f,title:e.target.value})} placeholder="Ex.: Retirar resultado"/></label>
     <div className="form-row"><label>Data<input type="date" value={f.due_date} onChange={e=>setF({...f,due_date:e.target.value})}/></label><label>Horário<input type="time" value={f.due_time} onChange={e=>setF({...f,due_time:e.target.value})}/></label></div>
     <label>Observações<textarea value={f.notes} onChange={e=>setF({...f,notes:e.target.value})}/></label>
+    <label>
+  Avisar
+  <select
+    value={f.remind_minutes_before}
+    onChange={e =>
+      setF({
+        ...f,
+        remind_minutes_before:Number(e.target.value)
+      })
+    }
+  >
+    <option value="0">No horário</option>
+    <option value="15">15 minutos antes</option>
+    <option value="30">30 minutos antes</option>
+    <option value="60">1 hora antes</option>
+    <option value="1440">1 dia antes</option>
+  </select>
+</label>
     <button className="primary wide">Salvar lembrete</button>
   </form></Modal>;
 }
