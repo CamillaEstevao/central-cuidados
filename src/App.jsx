@@ -1,17 +1,103 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Home, CalendarDays, Pill, Wallet, Bell, Plus, Check, Clock3, History,
-  Syringe, Droplets, AlertTriangle, ChevronRight, LogOut, Smartphone, Trash2
+  Syringe, Droplets, AlertTriangle, ChevronRight, LogOut, Smartphone, Trash2,
+  FileSpreadsheet, FileText
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 import { list, insert, update } from "./lib/db";
 import { enablePush } from "./lib/push";
 import Modal from "./components/Modal";
+import * as XLSX from "xlsx";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
 
 const money = n => Number(n || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const today = () => new Date().toISOString().slice(0, 10);
 const fmtDate = s => s ? new Date(`${s}T12:00:00`).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" }) : "";
 const fmtFull = s => s ? new Date(`${s}T12:00:00`).toLocaleDateString("pt-BR") : "";
+
+const fmtDateTimeSP = s => {
+  if (!s) return "";
+  const d = new Date(s);
+  return d.toLocaleString("pt-BR", {
+    timeZone:"America/Sao_Paulo",
+    day:"2-digit",
+    month:"2-digit",
+    year:"numeric",
+    hour:"2-digit",
+    minute:"2-digit"
+  });
+};
+
+const dateKeySP = s => {
+  if (!s) return "";
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone:"America/Sao_Paulo",
+    year:"numeric",
+    month:"2-digit",
+    day:"2-digit"
+  }).format(new Date(s));
+};
+
+const reportFile = (name, month) =>
+  `${name}-${month || "todos"}`.replace(/[^\w-]+/g, "-").toLowerCase();
+
+function exportWorkbook(fileName, sheets) {
+  const workbook = XLSX.utils.book_new();
+
+  sheets.forEach(({ name, rows }) => {
+    const sheet = XLSX.utils.json_to_sheet(rows);
+    XLSX.utils.book_append_sheet(workbook, sheet, name.slice(0, 31));
+  });
+
+  XLSX.writeFile(workbook, `${fileName}.xlsx`);
+}
+
+function exportPdfReport({ fileName, title, subtitle, columns, rows, footerLines=[] }) {
+  const doc = new jsPDF({
+    orientation:"landscape",
+    unit:"mm",
+    format:"a4"
+  });
+
+  doc.setFontSize(18);
+  doc.text(title, 14, 16);
+
+  if (subtitle) {
+    doc.setFontSize(10);
+    doc.text(subtitle, 14, 23);
+  }
+
+  autoTable(doc, {
+    startY: subtitle ? 29 : 23,
+    head:[columns],
+    body:rows,
+    styles:{
+      fontSize:8,
+      cellPadding:2.2,
+      overflow:"linebreak"
+    },
+    headStyles:{
+      fontStyle:"bold"
+    },
+    margin:{ left:10, right:10 }
+  });
+
+  let y = (doc.lastAutoTable?.finalY || 30) + 7;
+
+  footerLines.forEach(line => {
+    if (y > 195) {
+      doc.addPage();
+      y = 15;
+    }
+    doc.setFontSize(9);
+    doc.text(String(line), 14, y);
+    y += 5;
+  });
+
+  doc.save(`${fileName}.pdf`);
+}
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -210,7 +296,7 @@ function CareApp({ user }) {
       {tab==="appointments" && <AppointmentsPage items={appointments} reload={load} setModal={setModal}/>}
       {tab==="medications" && <MedicationsPage items={medications} logs={logs} reload={load} setModal={setModal} notify={notify}/>}
       {tab==="expenses" && <ExpensesPage items={expenses} setModal={setModal}/>}
-      {tab==="more" && <MorePage reminders={reminders} history={history} reload={load} setModal={setModal}/>}
+      {tab==="more" && <MorePage reminders={reminders} history={history} appointments={appointments} medications={medications} expenses={expenses} logs={logs} reload={load} setModal={setModal}/>}
     </main>
 
     <nav className="bottom-nav">
@@ -554,62 +640,101 @@ function MedicationsPage({ items, logs, reload, setModal, notify }) {
     <div className="list">
       {items.map(m=>(
         <div className="med-card" key={m.id}>
-          <div className="med-top">
-            <div className="med-icon">
+          <div
+            className="med-top"
+            style={{
+              display:"flex",
+              alignItems:"flex-start",
+              gap:"12px"
+            }}
+          >
+            <div className="med-icon" style={{flex:"0 0 auto"}}>
               {m.name.toLowerCase().includes("insulina")
                 ? <Syringe/>
                 : <Pill/>
               }
             </div>
 
-            <div className="grow">
-              <strong>{m.name}</strong>
+            <div className="grow" style={{minWidth:0}}>
+              <strong style={{
+                display:"block",
+                overflowWrap:"anywhere"
+              }}>
+                {m.name}
+              </strong>
+
               <span>{m.dose}</span>
-              <small>{m.prescription_text}</small>
-            </div>
-
-            <div style={{display:"flex",gap:"6px",alignItems:"center",flexWrap:"wrap",justifyContent:"flex-end"}}>
-              <button
-                type="button"
-                className="soft"
-                onClick={()=>toggleNotifications(m)}
-                title={(m.notifications_enabled ?? true) ? "Desativar avisos" : "Ativar avisos"}
-                style={{display:"flex",alignItems:"center",gap:"6px"}}
-              >
-                <Bell size={16}/>
-                {(m.notifications_enabled ?? true) ? "Avisos on" : "Avisos off"}
-              </button>
-
-              <button
-                className="soft"
-                onClick={()=>setModal({type:"medication",item:m})}
-              >
-                Editar
-              </button>
-
-              <button
-                type="button"
-                title="Excluir medicamento"
-                aria-label={`Excluir medicamento ${m.name}`}
-                onClick={()=>removeMedication(m)}
-                style={{
-                  width:"38px",
-                  height:"38px",
-                  border:"1px solid #f1d7d9",
-                  borderRadius:"10px",
-                  background:"#fff5f5",
-                  color:"#c94a54",
-                  display:"grid",
-                  placeItems:"center"
-                }}
-              >
-                <Trash2 size={17}/>
-              </button>
+              <small style={{overflowWrap:"anywhere"}}>
+                {m.prescription_text}
+              </small>
             </div>
           </div>
 
+          <div
+            style={{
+              display:"flex",
+              flexWrap:"wrap",
+              gap:"8px",
+              marginTop:"14px"
+            }}
+          >
+            <button
+              type="button"
+              className="soft"
+              onClick={()=>toggleNotifications(m)}
+              title={(m.notifications_enabled ?? true) ? "Desativar avisos" : "Ativar avisos"}
+              style={{
+                display:"flex",
+                alignItems:"center",
+                justifyContent:"center",
+                gap:"6px",
+                minHeight:"40px"
+              }}
+            >
+              <Bell size={16}/>
+              {(m.notifications_enabled ?? true) ? "Avisos on" : "Avisos off"}
+            </button>
+
+            <button
+              type="button"
+              className="soft"
+              onClick={()=>setModal({type:"medication",item:m})}
+              style={{minHeight:"40px"}}
+            >
+              Editar
+            </button>
+
+            <button
+              type="button"
+              title="Excluir medicamento"
+              aria-label={`Excluir medicamento ${m.name}`}
+              onClick={()=>removeMedication(m)}
+              style={{
+                width:"42px",
+                height:"40px",
+                border:"1px solid #f1d7d9",
+                borderRadius:"10px",
+                background:"#fff5f5",
+                color:"#c94a54",
+                display:"grid",
+                placeItems:"center",
+                flex:"0 0 auto"
+              }}
+            >
+              <Trash2 size={17}/>
+            </button>
+          </div>
+
           {Array.isArray(m.schedule) && m.schedule.length ? (
-            <div className="schedule-row">
+            <div
+              className="schedule-row"
+              style={{
+                marginTop:"14px",
+                display:"flex",
+                flexWrap:"wrap",
+                gap:"8px"
+              }}
+            >
               {m.schedule.map(t=>{
                 const taken = isTaken(m.id,t);
 
@@ -620,7 +745,7 @@ function MedicationsPage({ items, logs, reload, setModal, notify }) {
                     disabled={taken}
                     onClick={()=>take(m,t)}
                     style={taken ? {
-                      opacity:.72,
+                      opacity:.78,
                       cursor:"default",
                       background:"#edf9f2",
                       borderColor:"#bfe5ce"
@@ -636,26 +761,11 @@ function MedicationsPage({ items, logs, reload, setModal, notify }) {
               })}
             </div>
           ) : (
-            <div className="needs-confirm">
+            <div className="needs-confirm" style={{marginTop:"14px"}}>
               <AlertTriangle size={16}/>
               Defina os horários reais deste medicamento.
             </div>
           )}
-
-          <div style={{
-            marginTop:"10px",
-            fontSize:"13px",
-            color:(m.notifications_enabled ?? true) ? "#17835c" : "#8a8f9c",
-            display:"flex",
-            alignItems:"center",
-            gap:"6px"
-          }}>
-            <Bell size={14}/>
-            {(m.notifications_enabled ?? true)
-              ? "Notificações deste medicamento ativadas"
-              : "Notificações deste medicamento desativadas"
-            }
-          </div>
 
           {m.stock!==null && (
             <div className="stock">
@@ -683,7 +793,18 @@ function ExpensesPage({ items, setModal }) {
   </section>;
 }
 
-function MorePage({ reminders, history, reload, setModal }) {
+function MorePage({
+  reminders,
+  history,
+  appointments,
+  medications,
+  expenses,
+  logs,
+  reload,
+  setModal
+}) {
+  const [reportMonth,setReportMonth] = useState(today().slice(0,7));
+
   const toggle = async r => {
     const nextStatus = r.status === "completed" ? "pending" : "completed";
 
@@ -715,11 +836,277 @@ function MorePage({ reminders, history, reload, setModal }) {
     reload();
   };
 
+  const clearMedicationHistory = async () => {
+    const confirmed = window.confirm(
+      "Limpar todo o histórico de medicamentos tomados?\n\nOs medicamentos, horários, avisos, consultas e gastos não serão apagados."
+    );
+
+    if (!confirmed) return;
+
+    const { error } = await supabase
+      .from("medication_logs")
+      .delete()
+      .not("id","is",null);
+
+    if (error) {
+      window.alert("Não foi possível limpar o histórico de medicamentos: " + error.message);
+      return;
+    }
+
+    window.alert("Histórico de medicamentos limpo.");
+    reload();
+  };
+
+  const monthLabel = reportMonth
+    ? new Date(`${reportMonth}-01T12:00:00`).toLocaleDateString("pt-BR",{
+        month:"long",
+        year:"numeric"
+      })
+    : "todos os períodos";
+
+  const expensesPeriod = (expenses || []).filter(x =>
+    !reportMonth || x.date?.startsWith(reportMonth)
+  );
+
+  const appointmentsPeriod = (appointments || []).filter(x =>
+    !reportMonth || x.date?.startsWith(reportMonth)
+  );
+
+  const logsPeriod = (logs || []).filter(x => {
+    if (!reportMonth) return true;
+    return dateKeySP(x.taken_at).startsWith(reportMonth);
+  });
+
+  const exportExpensesExcel = () => {
+    const rows = expensesPeriod.map(x => ({
+      Data:fmtFull(x.date),
+      Categoria:x.category || "",
+      Descrição:x.description || "",
+      Valor:Number(x.amount || 0),
+      "Forma de pagamento":x.payment_method || ""
+    }));
+
+    rows.push({
+      Data:"",
+      Categoria:"",
+      Descrição:"TOTAL",
+      Valor:expensesPeriod.reduce((sum,x)=>sum+Number(x.amount||0),0),
+      "Forma de pagamento":""
+    });
+
+    exportWorkbook(
+      reportFile("relatorio-gastos",reportMonth),
+      [{name:"Gastos",rows}]
+    );
+  };
+
+  const exportExpensesPdf = () => {
+    const rows = expensesPeriod.map(x => [
+      fmtFull(x.date),
+      x.category || "",
+      x.description || "",
+      money(x.amount),
+      x.payment_method || ""
+    ]);
+
+    const total = expensesPeriod.reduce(
+      (sum,x)=>sum+Number(x.amount||0),
+      0
+    );
+
+    exportPdfReport({
+      fileName:reportFile("relatorio-gastos",reportMonth),
+      title:"Central de Cuidados - Relatório de gastos",
+      subtitle:`Período: ${monthLabel}`,
+      columns:["Data","Categoria","Descrição","Valor","Pagamento"],
+      rows,
+      footerLines:[
+        `Total do período: ${money(total)}`,
+        `Quantidade de lançamentos: ${expensesPeriod.length}`
+      ]
+    });
+  };
+
+  const exportAppointmentsExcel = () => {
+    const rows = appointmentsPeriod.map(x => ({
+      Data:fmtFull(x.date),
+      Horário:x.time || "",
+      Título:x.title || "",
+      Especialidade:x.specialty || "",
+      Profissional:x.professional || "",
+      Local:x.place || x.address || "",
+      Status:x.status === "completed" ? "Realizada" : "Agendada",
+      "Avisar antes (min)":Number(x.remind_minutes_before || 0)
+    }));
+
+    exportWorkbook(
+      reportFile("relatorio-consultas",reportMonth),
+      [{name:"Consultas",rows}]
+    );
+  };
+
+  const exportAppointmentsPdf = () => {
+    const rows = appointmentsPeriod.map(x => [
+      fmtFull(x.date),
+      x.time || "",
+      x.title || "",
+      x.professional || "",
+      x.place || x.address || "",
+      x.status === "completed" ? "Realizada" : "Agendada"
+    ]);
+
+    exportPdfReport({
+      fileName:reportFile("relatorio-consultas",reportMonth),
+      title:"Central de Cuidados - Relatório de consultas",
+      subtitle:`Período: ${monthLabel}`,
+      columns:["Data","Hora","Consulta/Exame","Profissional","Local","Status"],
+      rows,
+      footerLines:[
+        `Total de consultas/exames: ${appointmentsPeriod.length}`,
+        `Realizadas: ${appointmentsPeriod.filter(x=>x.status==="completed").length}`,
+        `Agendadas: ${appointmentsPeriod.filter(x=>x.status==="upcoming").length}`
+      ]
+    });
+  };
+
+  const medicationSummaryRows = (medications || []).map(m => {
+    const medLogs = logsPeriod.filter(log => log.medication_id === m.id);
+
+    return {
+      Medicamento:m.name || "",
+      Dose:m.dose || "",
+      Horários:Array.isArray(m.schedule) ? m.schedule.join(", ") : "",
+      Avisos:(m.notifications_enabled ?? true) ? "Ativados" : "Desativados",
+      "Tomadas no período":medLogs.length,
+      Estoque:m.stock == null
+        ? ""
+        : `${m.stock} ${m.stock_unit || ""}`.trim()
+    };
+  });
+
+  const medicationTakenRows = logsPeriod.map(log => ({
+    Data:fmtDateTimeSP(log.taken_at),
+    Medicamento:log.medication_name || "",
+    "Horário programado":fmtDateTimeSP(log.scheduled_at),
+    Status:log.status === "taken" ? "Tomado" : (log.status || "")
+  }));
+
+  const exportMedicationsExcel = () => {
+    exportWorkbook(
+      reportFile("relatorio-medicamentos",reportMonth),
+      [
+        {name:"Medicamentos",rows:medicationSummaryRows},
+        {name:"Tomadas",rows:medicationTakenRows}
+      ]
+    );
+  };
+
+  const exportMedicationsPdf = () => {
+    const rows = medicationSummaryRows.map(x => [
+      x.Medicamento,
+      x.Dose,
+      x.Horários,
+      x.Avisos,
+      String(x["Tomadas no período"]),
+      x.Estoque
+    ]);
+
+    exportPdfReport({
+      fileName:reportFile("relatorio-medicamentos",reportMonth),
+      title:"Central de Cuidados - Relatório de medicamentos",
+      subtitle:`Período das tomadas: ${monthLabel}`,
+      columns:["Medicamento","Dose","Horários","Avisos","Tomadas","Estoque"],
+      rows,
+      footerLines:[
+        `Medicamentos cadastrados: ${(medications || []).length}`,
+        `Tomadas registradas no período: ${logsPeriod.length}`
+      ]
+    });
+  };
+
+  const reportCard = ({
+    icon,
+    title,
+    description,
+    onPdf,
+    onExcel
+  }) => (
+    <div style={{
+      border:"1px solid #e3e5ef",
+      background:"#fff",
+      borderRadius:"18px",
+      padding:"16px",
+      minWidth:0
+    }}>
+      <div style={{
+        display:"flex",
+        alignItems:"center",
+        gap:"10px",
+        marginBottom:"8px"
+      }}>
+        <div className="metric-icon">
+          {icon}
+        </div>
+
+        <div style={{minWidth:0}}>
+          <strong style={{display:"block"}}>
+            {title}
+          </strong>
+          <span style={{
+            display:"block",
+            fontSize:"13px",
+            color:"#777f91",
+            marginTop:"2px"
+          }}>
+            {description}
+          </span>
+        </div>
+      </div>
+
+      <div style={{
+        display:"flex",
+        flexWrap:"wrap",
+        gap:"8px",
+        marginTop:"14px"
+      }}>
+        <button
+          type="button"
+          className="soft"
+          onClick={onPdf}
+          style={{
+            display:"flex",
+            alignItems:"center",
+            gap:"6px",
+            minHeight:"40px"
+          }}
+        >
+          <FileText size={16}/>
+          PDF
+        </button>
+
+        <button
+          type="button"
+          className="soft"
+          onClick={onExcel}
+          style={{
+            display:"flex",
+            alignItems:"center",
+            gap:"6px",
+            minHeight:"40px"
+          }}
+        >
+          <FileSpreadsheet size={16}/>
+          Excel
+        </button>
+      </div>
+    </div>
+  );
+
   return <section>
     <div className="section-title">
       <div>
-        <h1>Lembretes e histórico</h1>
-        <p>Pendências e tudo que já foi registrado.</p>
+        <h1>Lembretes, relatórios e histórico</h1>
+        <p>Gerencie pendências e exporte os registros do cuidado.</p>
       </div>
 
       <button
@@ -729,6 +1116,83 @@ function MorePage({ reminders, history, reload, setModal }) {
         <Plus size={18}/>
         Lembrete
       </button>
+    </div>
+
+    <div style={{
+      border:"1px solid #e1e4ee",
+      background:"#f8f8fc",
+      borderRadius:"20px",
+      padding:"16px",
+      marginBottom:"22px"
+    }}>
+      <div style={{
+        display:"flex",
+        gap:"14px",
+        justifyContent:"space-between",
+        alignItems:"end",
+        flexWrap:"wrap",
+        marginBottom:"14px"
+      }}>
+        <div>
+          <h2 style={{margin:"0 0 4px"}}>
+            Relatórios
+          </h2>
+          <p style={{margin:0,color:"#777f91"}}>
+            Exporte medicamentos, gastos e consultas em PDF ou Excel.
+          </p>
+        </div>
+
+        <label style={{
+          display:"grid",
+          gap:"5px",
+          fontSize:"13px",
+          fontWeight:700
+        }}>
+          Período
+          <input
+            type="month"
+            value={reportMonth}
+            onChange={e=>setReportMonth(e.target.value)}
+            style={{
+              minHeight:"40px",
+              border:"1px solid #dfe2ec",
+              borderRadius:"10px",
+              padding:"0 10px",
+              background:"#fff"
+            }}
+          />
+        </label>
+      </div>
+
+      <div style={{
+        display:"grid",
+        gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",
+        gap:"12px"
+      }}>
+        {reportCard({
+          icon:<Pill size={19}/>,
+          title:"Medicamentos",
+          description:`${logsPeriod.length} tomada(s) no período`,
+          onPdf:exportMedicationsPdf,
+          onExcel:exportMedicationsExcel
+        })}
+
+        {reportCard({
+          icon:<Wallet size={19}/>,
+          title:"Gastos",
+          description:`${expensesPeriod.length} lançamento(s)`,
+          onPdf:exportExpensesPdf,
+          onExcel:exportExpensesExcel
+        })}
+
+        {reportCard({
+          icon:<CalendarDays size={19}/>,
+          title:"Consultas",
+          description:`${appointmentsPeriod.length} compromisso(s)`,
+          onPdf:exportAppointmentsPdf,
+          onExcel:exportAppointmentsExcel
+        })}
+      </div>
     </div>
 
     <div className="two-col">
@@ -748,8 +1212,22 @@ function MorePage({ reminders, history, reload, setModal }) {
                 <button
                   type="button"
                   onClick={() => toggle(r)}
-                  style={{ flex:1, border:0, background:"transparent", padding:0, display:"flex", alignItems:"center", gap:"11px", textAlign:"left", color:"inherit" }}
-                  aria-label={r.status === "completed" ? "Marcar lembrete como pendente" : "Marcar lembrete como concluído"}
+                  style={{
+                    flex:1,
+                    border:0,
+                    background:"transparent",
+                    padding:0,
+                    display:"flex",
+                    alignItems:"center",
+                    gap:"11px",
+                    textAlign:"left",
+                    color:"inherit"
+                  }}
+                  aria-label={
+                    r.status === "completed"
+                      ? "Marcar lembrete como pendente"
+                      : "Marcar lembrete como concluído"
+                  }
                 >
                   <span className="check-circle">
                     {r.status === "completed" ? <Check size={15}/> : null}
@@ -766,7 +1244,17 @@ function MorePage({ reminders, history, reload, setModal }) {
                   onClick={() => removeReminder(r)}
                   title="Excluir lembrete"
                   aria-label={`Excluir lembrete ${r.title}`}
-                  style={{ width:"38px", height:"38px", border:"1px solid #f1d7d9", borderRadius:"10px", background:"#fff5f5", color:"#c94a54", display:"grid", placeItems:"center", flex:"0 0 auto" }}
+                  style={{
+                    width:"38px",
+                    height:"38px",
+                    border:"1px solid #f1d7d9",
+                    borderRadius:"10px",
+                    background:"#fff5f5",
+                    color:"#c94a54",
+                    display:"grid",
+                    placeItems:"center",
+                    flex:"0 0 auto"
+                  }}
                 >
                   <Trash2 size={17}/>
                 </button>
@@ -777,7 +1265,36 @@ function MorePage({ reminders, history, reload, setModal }) {
       </div>
 
       <div>
-        <h2 className="mini-title">Histórico</h2>
+        <div style={{
+          display:"flex",
+          alignItems:"center",
+          justifyContent:"space-between",
+          gap:"10px",
+          marginBottom:"10px"
+        }}>
+          <h2 className="mini-title" style={{margin:0}}>Histórico</h2>
+
+          <button
+            type="button"
+            onClick={clearMedicationHistory}
+            title="Limpar histórico de medicamentos tomados"
+            style={{
+              border:"1px solid #f1d7d9",
+              borderRadius:"10px",
+              background:"#fff5f5",
+              color:"#c94a54",
+              padding:"8px 10px",
+              display:"flex",
+              alignItems:"center",
+              gap:"6px",
+              fontWeight:700,
+              cursor:"pointer"
+            }}
+          >
+            <Trash2 size={16}/>
+            Limpar tomadas
+          </button>
+        </div>
 
         <div className="timeline">
           {history.length === 0 ? (

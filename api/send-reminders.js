@@ -221,9 +221,6 @@ export default async function handler(req, res) {
     const todaySP = saoPauloToday(now);
 
     for (const m of medications || []) {
-
-      // Se os avisos desse medicamento
-      // estiverem desligados, não faz nada.
       if (m.notifications_enabled === false) {
         continue;
       }
@@ -249,10 +246,8 @@ export default async function handler(req, res) {
         const scheduledAt =
           notifyAt.toISOString();
 
-        // -------------------------
-        // JÁ ENVIOU ESTE AVISO?
-        // -------------------------
-
+        // Verifica se esse medicamento
+        // já teve aviso nesse horário hoje.
         const {
           data: alreadySent,
           error: checkError
@@ -272,10 +267,6 @@ export default async function handler(req, res) {
           continue;
         }
 
-        // -------------------------
-        // JÁ FOI MARCADO COMO TOMADO?
-        // -------------------------
-
         const {
           data: alreadyTaken,
           error: takenCheckError
@@ -286,12 +277,8 @@ export default async function handler(req, res) {
           .eq("scheduled_at", scheduledAt)
           .limit(1);
 
-        if (takenCheckError) {
-          throw takenCheckError;
-        }
+        if (takenCheckError) throw takenCheckError;
 
-        // Se já tomou essa dose,
-        // não precisa mandar notificação.
         if (
           alreadyTaken &&
           alreadyTaken.length > 0
@@ -471,7 +458,6 @@ export default async function handler(req, res) {
     return res.status(200).json({
       ok: true,
       timezone: TIMEZONE,
-
       serverTime:
         now.toISOString(),
 
