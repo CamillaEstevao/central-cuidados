@@ -454,6 +454,72 @@ function AppointmentsPage({ items, reload, setModal }) {
     return `${n} min antes`;
   };
 
+  const appointmentAttention = item => {
+    if (!item?.date || item.status === "completed") {
+      return { type:"normal", label:"", border:"#e1e4ec", background:"#fff" };
+    }
+
+    if (item.status === "waitlist") {
+      return {
+        type:"waitlist",
+        label:"FILA DE ESPERA",
+        border:"#e3a528",
+        background:"#fffdf6"
+      };
+    }
+
+    const itemDate = new Date(`${item.date}T12:00:00`);
+    const now = new Date();
+
+    const todayDate = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      12, 0, 0
+    );
+
+    const tomorrowDate = new Date(todayDate);
+    tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+
+    const itemKey = itemDate.toISOString().slice(0,10);
+    const todayKey = todayDate.toISOString().slice(0,10);
+    const tomorrowKey = tomorrowDate.toISOString().slice(0,10);
+
+    if (itemKey === todayKey) {
+      return {
+        type:"today",
+        label:"HOJE",
+        border:"#7351ef",
+        background:"#fdfcff"
+      };
+    }
+
+    if (itemKey === tomorrowKey) {
+      return {
+        type:"tomorrow",
+        label:"AMANHÃ",
+        border:"#e3a528",
+        background:"#fffdf6"
+      };
+    }
+
+    if (itemDate < todayDate) {
+      return {
+        type:"overdue",
+        label:"ATRASADO",
+        border:"#d65a64",
+        background:"#fffafa"
+      };
+    }
+
+    return {
+      type:"normal",
+      label:"",
+      border:"#e1e4ec",
+      background:"#fff"
+    };
+  };
+
   const complete = async x => {
     await update("appointments", x.id, { status:"completed" });
     reload();
@@ -465,6 +531,27 @@ function AppointmentsPage({ items, reload, setModal }) {
       notification_sent:false
     });
     reload();
+  };
+
+  const moveToWaitlist = async x => {
+    const confirmed = window.confirm(
+      `Colocar "${x.title}" na fila de espera?\n\nEnquanto estiver na fila de espera, esse agendamento não será tratado como atrasado e os avisos ficam pausados.`
+    );
+
+    if (!confirmed) return;
+
+    await update("appointments", x.id, {
+      status:"waitlist",
+      notification_sent:true
+    });
+
+    reload();
+  };
+
+  const statusLabel = status => {
+    if (status === "completed") return "Realizado";
+    if (status === "waitlist") return "Fila de espera";
+    return "Agendado";
   };
 
   const removeAppointment = async x => {
@@ -538,8 +625,12 @@ function AppointmentsPage({ items, reload, setModal }) {
       if (x.place) lines.push(`📍 Local: ${x.place}`);
       if (x.address) lines.push(`📌 Endereço: ${x.address}`);
       if (x.notes) lines.push(`📝 Observações: ${x.notes}`);
-      lines.push(`🔔 Aviso: ${reminderLabel(x.remind_minutes_before)}`);
-      lines.push(`Status: ${x.status === "completed" ? "Realizado" : "Agendado"}`);
+      lines.push(
+        x.status === "waitlist"
+          ? "🔕 Avisos pausados — Fila de espera"
+          : `🔔 Aviso: ${reminderLabel(x.remind_minutes_before)}`
+      );
+      lines.push(`Status: ${statusLabel(x.status)}`);
 
       return lines.filter(Boolean).join("\n");
     });
@@ -596,7 +687,35 @@ function AppointmentsPage({ items, reload, setModal }) {
     );
   };
 
-  return <section>
+  return <>
+    <style>{`
+      @keyframes appointmentTodayPulse {
+        0% {
+          box-shadow: 0 0 0 0 rgba(108,73,232,.28),
+                      0 10px 28px rgba(103,71,232,.10);
+        }
+        65% {
+          box-shadow: 0 0 0 9px rgba(108,73,232,0),
+                      0 10px 28px rgba(103,71,232,.14);
+        }
+        100% {
+          box-shadow: 0 0 0 0 rgba(108,73,232,0),
+                      0 10px 28px rgba(103,71,232,.10);
+        }
+      }
+
+      .appointment-today-pulse {
+        animation: appointmentTodayPulse 1.8s ease-in-out infinite;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .appointment-today-pulse {
+          animation: none;
+        }
+      }
+    `}</style>
+
+    <section>
     <div className="section-title" style={{alignItems:"flex-start"}}>
       <div>
         <h1>Consultas, exames e retiradas</h1>
@@ -681,16 +800,29 @@ function AppointmentsPage({ items, reload, setModal }) {
         const isExam = kind === "exam";
         const isSupplies = kind === "supplies";
         const date = dateParts(x.date);
+        const attention = appointmentAttention(x);
 
         return (
           <article
             key={x.id}
+            className={attention.type === "today" ? "appointment-today-pulse" : ""}
             style={{
-              background:"#fff",
-              border:"1px solid #e1e4ec",
+              background:attention.background,
+              border:attention.type === "normal"
+                ? `1px solid ${attention.border}`
+                : `2px solid ${attention.border}`,
               borderRadius:"20px",
               padding:"16px",
-              boxShadow:"0 2px 7px rgba(22,31,55,.02)"
+              boxShadow:
+                attention.type === "today"
+                  ? "0 10px 28px rgba(103,71,232,.12)"
+                  : attention.type === "tomorrow"
+                    ? "0 8px 22px rgba(227,165,40,.10)"
+                    : attention.type === "overdue"
+                      ? "0 8px 22px rgba(214,90,100,.10)"
+                      : attention.type === "waitlist"
+                        ? "0 8px 22px rgba(227,165,40,.12)"
+                        : "0 2px 7px rgba(22,31,55,.02)"
             }}
           >
             <div style={{
@@ -742,6 +874,39 @@ function AppointmentsPage({ items, reload, setModal }) {
                 }}>
                   {x.time ? String(x.time).slice(0,5) : "Horário a confirmar"}
                 </span>
+
+                {attention.label && (
+                  <span style={{
+                    display:"inline-flex",
+                    alignItems:"center",
+                    gap:"6px",
+                    marginTop:"9px",
+                    borderRadius:"999px",
+                    padding:"6px 10px",
+                    fontSize:"12px",
+                    fontWeight:900,
+                    letterSpacing:".35px",
+                    background:
+                      attention.type === "today"
+                        ? "#6c49e8"
+                        : attention.type === "tomorrow"
+                          ? "#fff0c8"
+                          : attention.type === "waitlist"
+                            ? "#fff0c8"
+                            : "#ffe8ea",
+                    color:
+                      attention.type === "today"
+                        ? "#fff"
+                        : attention.type === "tomorrow"
+                          ? "#9a6900"
+                          : attention.type === "waitlist"
+                            ? "#9a6900"
+                            : "#b53e49"
+                  }}>
+                    {attention.type === "today" && <Bell size={13}/>}
+                    {attention.label}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -759,16 +924,50 @@ function AppointmentsPage({ items, reload, setModal }) {
                 Editar
               </button>
 
-              {x.status === "upcoming" ? (
+              {x.status === "upcoming" && (
+                <>
+                  <button
+                    type="button"
+                    className="soft success"
+                    title="Marcar como realizado"
+                    onClick={()=>complete(x)}
+                  >
+                    <Check size={16}/>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="soft"
+                    title="Mover para fila de espera"
+                    onClick={()=>moveToWaitlist(x)}
+                    style={{
+                      color:"#9a6900",
+                      background:"#fffaf0",
+                      borderColor:"#f0dfb5"
+                    }}
+                  >
+                    <Clock3 size={16}/>
+                    Fila
+                  </button>
+                </>
+              )}
+
+              {x.status === "waitlist" && (
                 <button
                   type="button"
-                  className="soft success"
-                  title="Marcar como realizado"
-                  onClick={()=>complete(x)}
+                  className="soft"
+                  onClick={()=>reopen(x)}
+                  style={{
+                    color:"#6747e8",
+                    background:"#f4f1ff",
+                    borderColor:"#ded6ff"
+                  }}
                 >
-                  <Check size={16}/>
+                  Reativar
                 </button>
-              ) : (
+              )}
+
+              {x.status === "completed" && (
                 <button
                   type="button"
                   className="soft"
@@ -875,12 +1074,15 @@ function AppointmentsPage({ items, reload, setModal }) {
                 display:"flex",
                 alignItems:"center",
                 gap:"6px",
-                color:"#6747e8",
+                color:x.status === "waitlist" ? "#9a6900" : "#6747e8",
                 fontSize:"13px",
                 fontWeight:700
               }}>
                 <Bell size={14}/>
-                Aviso: {reminderLabel(x.remind_minutes_before)}
+                {x.status === "waitlist"
+                  ? "Avisos pausados — Fila de espera"
+                  : `Aviso: ${reminderLabel(x.remind_minutes_before)}`
+                }
               </div>
             </div>
 
@@ -890,19 +1092,30 @@ function AppointmentsPage({ items, reload, setModal }) {
                 alignItems:"center",
                 borderRadius:"999px",
                 padding:"6px 10px",
-                background:x.status === "completed" ? "#edf9f2" : "#f2efff",
-                color:x.status === "completed" ? "#17835c" : "#6747e8",
+                background:
+                  x.status === "completed"
+                    ? "#edf9f2"
+                    : x.status === "waitlist"
+                      ? "#fff0c8"
+                      : "#f2efff",
+                color:
+                  x.status === "completed"
+                    ? "#17835c"
+                    : x.status === "waitlist"
+                      ? "#9a6900"
+                      : "#6747e8",
                 fontWeight:800,
                 fontSize:"13px"
               }}>
-                {x.status === "completed" ? "Realizado" : "Agendado"}
+                {statusLabel(x.status)}
               </span>
             </div>
           </article>
         );
       })}
     </div>
-  </section>;
+  </section>
+  </>;
 }
 
 function MedicationsPage({ items, logs, reload, setModal, notify }) {
@@ -1420,7 +1633,7 @@ function MorePage({
           ? (x.professional || "")
           : "",
       Local:x.place || x.address || "",
-      Status:x.status === "completed" ? "Realizado" : "Agendado",
+      Status:x.status === "completed" ? "Realizado" : (x.status === "waitlist" ? "Fila de espera" : "Agendado"),
       "Avisar antes (min)":Number(x.remind_minutes_before || 0)
     }));
 
@@ -1442,7 +1655,7 @@ function MorePage({
           ? (x.professional || "")
           : "",
       x.place || x.address || "",
-      x.status === "completed" ? "Realizado" : "Agendado"
+      x.status === "completed" ? "Realizado" : (x.status === "waitlist" ? "Fila de espera" : "Agendado")
     ]);
 
     exportPdfReport({
@@ -2070,7 +2283,7 @@ function AppointmentModal({item,presetType,onClose,reload}) {
     const body = {
       ...f,
       remind_minutes_before:Number(f.remind_minutes_before),
-      notification_sent:false,
+      notification_sent:f.status === "upcoming" ? false : true,
       professional:(!isExam && !isSupplies) ? f.professional : null,
       specialty:(!isExam && !isSupplies) ? f.specialty : null,
       requesting_doctor:isExam ? f.requesting_doctor : null,
@@ -2242,19 +2455,52 @@ function AppointmentModal({item,presetType,onClose,reload}) {
       </label>
 
       <label>
+        Situação
+        <select
+          value={f.status}
+          onChange={e=>setF({
+            ...f,
+            status:e.target.value
+          })}
+        >
+          <option value="upcoming">Agendado</option>
+          <option value="waitlist">Fila de espera</option>
+          <option value="completed">Realizado</option>
+        </select>
+      </label>
+
+      <label>
         Avisar
         <select
           value={f.remind_minutes_before}
+          disabled={f.status === "waitlist"}
           onChange={e=>setF({
             ...f,
             remind_minutes_before:Number(e.target.value)
           })}
+          style={f.status === "waitlist" ? {
+            opacity:.62,
+            cursor:"not-allowed",
+            background:"#f3f4f7"
+          } : undefined}
         >
           <option value="0">No horário</option>
           <option value="60">1 hora antes</option>
           <option value="1440">1 dia antes</option>
           <option value="10080">7 dias antes</option>
         </select>
+
+        {f.status === "waitlist" && (
+          <small style={{
+            display:"block",
+            marginTop:"6px",
+            color:"#9a6900",
+            fontWeight:700,
+            lineHeight:1.4
+          }}>
+            🔕 Avisos pausados enquanto estiver na fila de espera. A configuração atual será mantida para quando o agendamento for reativado.
+          </small>
+        )}
       </label>
 
       <button className="primary wide">
