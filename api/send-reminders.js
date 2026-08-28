@@ -201,13 +201,18 @@ export default async function handler(req, res) {
         notifyAt <= windowEnd
       ) {
         const isExam = a.appointment_type === "exam";
+        const isSupplies = a.appointment_type === "supplies";
 
         due.push({
           type: "appointment",
           table: "appointments",
           item: a,
           notifyAt,
-          title: isExam ? "🧪 Exame agendado" : "📅 Consulta agendada",
+          title: isExam
+            ? "🧪 Exame agendado"
+            : isSupplies
+              ? "📦 Insumos e remédios"
+              : "📅 Consulta agendada",
           body:
             `${a.title} • ` +
             `${a.date} às ${String(a.time).slice(0, 5)}`,

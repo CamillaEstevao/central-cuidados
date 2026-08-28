@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   Home, CalendarDays, Pill, Wallet, Bell, Plus, Check, Clock3, History,
   Syringe, Droplets, AlertTriangle, ChevronRight, LogOut, Smartphone, Trash2,
-  FileSpreadsheet, FileText, Share2, NotebookPen, Pin, Stethoscope, Activity
+  FileSpreadsheet, FileText, Share2, NotebookPen, Pin, Stethoscope, Activity, PackageOpen
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 import { list, insert, update } from "./lib/db";
@@ -19,9 +19,20 @@ const fmtFull = s => s ? new Date(`${s}T12:00:00`).toLocaleDateString("pt-BR") :
 
 const appointmentKind = item => {
   if (item?.appointment_type === "exam") return "exam";
+  if (item?.appointment_type === "supplies") return "supplies";
   if (item?.appointment_type === "consultation") return "consultation";
 
   const title = String(item?.title || "").toLowerCase();
+
+  const suppliesWords = [
+    "insumo","insumos","remédio","remedio","remédios","remedios",
+    "retirar medicamento","retirada de medicamento","farmácia","farmacia",
+    "fralda","fraldas","material"
+  ];
+
+  if (suppliesWords.some(word => title.includes(word))) {
+    return "supplies";
+  }
 
   const examWords = [
     "exame","eletro","ecg","ultrassom","ultrassonografia","raio x","raio-x",
@@ -35,8 +46,12 @@ const appointmentKind = item => {
     : "consultation";
 };
 
-const appointmentTypeLabel = item =>
-  appointmentKind(item) === "exam" ? "Exame" : "Consulta médica";
+const appointmentTypeLabel = item => {
+  const kind = appointmentKind(item);
+  if (kind === "exam") return "Exame";
+  if (kind === "supplies") return "Insumos e remédios";
+  return "Consulta médica";
+};
 
 const fmtDateTimeSP = s => {
   if (!s) return "";
@@ -409,6 +424,36 @@ function AppointmentsPage({ items, reload, setModal }) {
     x => appointmentKind(x) === "exam"
   ).length;
 
+  const suppliesCount = (items || []).filter(
+    x => appointmentKind(x) === "supplies"
+  ).length;
+
+  const dateParts = date => {
+    if (!date) return { day:"--", month:"---" };
+
+    const d = new Date(`${date}T12:00:00`);
+
+    return {
+      day:d.toLocaleDateString("pt-BR", { day:"2-digit" }),
+      month:d
+        .toLocaleDateString("pt-BR", { month:"short" })
+        .replace(".","")
+        .toUpperCase()
+    };
+  };
+
+  const reminderLabel = minutes => {
+    const n = Number(minutes ?? 0);
+    if (n === 0) return "No horário";
+    if (n === 60) return "1 hora antes";
+    if (n === 1440) return "1 dia antes";
+    if (n === 10080) return "7 dias antes";
+    if (n < 60) return `${n} min antes`;
+    if (n % 1440 === 0) return `${n/1440} dia(s) antes`;
+    if (n % 60 === 0) return `${n/60} hora(s) antes`;
+    return `${n} min antes`;
+  };
+
   const complete = async x => {
     await update("appointments", x.id, { status:"completed" });
     reload();
@@ -423,7 +468,14 @@ function AppointmentsPage({ items, reload, setModal }) {
   };
 
   const removeAppointment = async x => {
-    const label = appointmentKind(x) === "exam" ? "exame" : "consulta";
+    const kind = appointmentKind(x);
+    const label =
+      kind === "exam"
+        ? "exame"
+        : kind === "supplies"
+          ? "agendamento de insumos e remédios"
+          : "consulta";
+
     const confirmed = window.confirm(
       `Excluir ${label} "${x.title}"?\n\nEssa ação não pode ser desfeita.`
     );
@@ -445,49 +497,49 @@ function AppointmentsPage({ items, reload, setModal }) {
 
   const shareWhatsApp = () => {
     if (!visibleItems.length) {
-      window.alert(
+      const emptyText =
         activeType === "exam"
           ? "Nenhum exame para compartilhar."
-          : "Nenhuma consulta para compartilhar."
-      );
+          : activeType === "supplies"
+            ? "Nenhum agendamento de insumos e remédios para compartilhar."
+            : "Nenhuma consulta para compartilhar.";
+
+      window.alert(emptyText);
       return;
     }
 
     const heading =
       activeType === "exam"
         ? "EXAMES"
-        : "CONSULTAS MÉDICAS";
+        : activeType === "supplies"
+          ? "INSUMOS E REMÉDIOS"
+          : "CONSULTAS MÉDICAS";
 
     const blocks = visibleItems.map(x => {
+      const kind = appointmentKind(x);
       const lines = [
         `*${x.title || appointmentTypeLabel(x)}*`,
         x.date ? `📅 Data: ${fmtFull(x.date)}` : "",
         x.time ? `🕐 Horário: ${String(x.time).slice(0,5)}` : ""
       ];
 
-      if (appointmentKind(x) === "exam") {
+      if (kind === "exam") {
         if (x.requesting_doctor) {
           lines.push(`👩‍⚕️ Médico solicitante: ${x.requesting_doctor}`);
         }
         if (x.requesting_specialty) {
           lines.push(`🩺 Especialidade: ${x.requesting_specialty}`);
         }
-      } else {
-        if (x.professional) {
-          lines.push(`👩‍⚕️ Médico: ${x.professional}`);
-        }
-        if (x.specialty) {
-          lines.push(`🩺 Especialidade: ${x.specialty}`);
-        }
+      } else if (kind === "consultation") {
+        if (x.professional) lines.push(`👩‍⚕️ Médico: ${x.professional}`);
+        if (x.specialty) lines.push(`🩺 Especialidade: ${x.specialty}`);
       }
 
       if (x.place) lines.push(`📍 Local: ${x.place}`);
       if (x.address) lines.push(`📌 Endereço: ${x.address}`);
       if (x.notes) lines.push(`📝 Observações: ${x.notes}`);
-
-      lines.push(
-        `Status: ${x.status === "completed" ? "Realizado" : "Agendado"}`
-      );
+      lines.push(`🔔 Aviso: ${reminderLabel(x.remind_minutes_before)}`);
+      lines.push(`Status: ${x.status === "completed" ? "Realizado" : "Agendado"}`);
 
       return lines.filter(Boolean).join("\n");
     });
@@ -510,13 +562,13 @@ function AppointmentsPage({ items, reload, setModal }) {
         type="button"
         onClick={()=>setActiveType(type)}
         style={{
-          flex:"1 1 160px",
+          flex:"1 1 145px",
           border:active ? "1px solid #7351ef" : "1px solid #e0e3ed",
           borderRadius:"14px",
           background:active ? "#f1edff" : "#fff",
           color:active ? "#6243df" : "#737b8d",
           minHeight:"48px",
-          padding:"0 14px",
+          padding:"0 12px",
           display:"flex",
           alignItems:"center",
           justifyContent:"center",
@@ -526,7 +578,7 @@ function AppointmentsPage({ items, reload, setModal }) {
         }}
       >
         <Icon size={18}/>
-        {label}
+        <span style={{textAlign:"center",lineHeight:1.15}}>{label}</span>
         <span style={{
           minWidth:"23px",
           height:"23px",
@@ -547,8 +599,8 @@ function AppointmentsPage({ items, reload, setModal }) {
   return <section>
     <div className="section-title" style={{alignItems:"flex-start"}}>
       <div>
-        <h1>Consultas e exames</h1>
-        <p>Agendamentos separados para encontrar tudo rapidamente.</p>
+        <h1>Consultas, exames e retiradas</h1>
+        <p>Consultas, exames, insumos e remédios em um só lugar.</p>
       </div>
 
       <div style={{
@@ -604,6 +656,13 @@ function AppointmentsPage({ items, reload, setModal }) {
         examCount,
         Activity
       )}
+
+      {tabButton(
+        "supplies",
+        "Insumos e remédios",
+        suppliesCount,
+        PackageOpen
+      )}
     </div>
 
     <div className="list">
@@ -612,91 +671,85 @@ function AppointmentsPage({ items, reload, setModal }) {
           text={
             activeType === "exam"
               ? "Nenhum exame cadastrado."
-              : "Nenhuma consulta médica cadastrada."
+              : activeType === "supplies"
+                ? "Nenhum agendamento de insumos e remédios cadastrado."
+                : "Nenhuma consulta médica cadastrada."
           }
         />
       ) : visibleItems.map(x => {
-        const isExam = appointmentKind(x) === "exam";
+        const kind = appointmentKind(x);
+        const isExam = kind === "exam";
+        const isSupplies = kind === "supplies";
+        const date = dateParts(x.date);
 
         return (
-          <div
-            className="list-card"
+          <article
             key={x.id}
             style={{
-              alignItems:"flex-start",
-              gap:"12px"
+              background:"#fff",
+              border:"1px solid #e1e4ec",
+              borderRadius:"20px",
+              padding:"16px",
+              boxShadow:"0 2px 7px rgba(22,31,55,.02)"
             }}
           >
-            <div className="date-tile" style={{flex:"0 0 auto"}}>
-              <b>{fmtDate(x.date).split(" ")[0]}</b>
-              <span>{fmtDate(x.date).split(" ")[1]}</span>
-            </div>
-
-            <div className="grow" style={{minWidth:0}}>
-              <strong style={{
-                display:"block",
-                overflowWrap:"anywhere"
+            <div style={{
+              display:"grid",
+              gridTemplateColumns:"72px minmax(0,1fr)",
+              gap:"14px",
+              alignItems:"start"
+            }}>
+              <div style={{
+                width:"72px",
+                minHeight:"82px",
+                borderRadius:"16px",
+                background:"#f2efff",
+                color:"#6946e5",
+                display:"flex",
+                flexDirection:"column",
+                alignItems:"center",
+                justifyContent:"center",
+                textAlign:"center"
               }}>
-                {x.title}
-              </strong>
+                <strong style={{fontSize:"28px",lineHeight:1}}>
+                  {date.day}
+                </strong>
+                <span style={{
+                  marginTop:"6px",
+                  fontSize:"13px",
+                  fontWeight:800
+                }}>
+                  {date.month}
+                </span>
+              </div>
 
-              <span>
-                {x.time ? String(x.time).slice(0,5) : "Horário a confirmar"}
-              </span>
+              <div style={{minWidth:0}}>
+                <strong style={{
+                  display:"block",
+                  fontSize:"18px",
+                  lineHeight:1.35,
+                  color:"#17233f",
+                  overflowWrap:"anywhere"
+                }}>
+                  {x.title}
+                </strong>
 
-              {isExam ? (
-                <>
-                  {x.requesting_doctor && (
-                    <small style={{display:"block"}}>
-                      Solicitado por: <b>{x.requesting_doctor}</b>
-                    </small>
-                  )}
-
-                  {x.requesting_specialty && (
-                    <small style={{display:"block"}}>
-                      {x.requesting_specialty}
-                    </small>
-                  )}
-                </>
-              ) : (
-                <>
-                  {x.professional && (
-                    <small style={{display:"block"}}>
-                      Médico: <b>{x.professional}</b>
-                    </small>
-                  )}
-
-                  {x.specialty && (
-                    <small style={{display:"block"}}>
-                      Especialidade: {x.specialty}
-                    </small>
-                  )}
-                </>
-              )}
-
-              {(x.place || x.address) && (
-                <small style={{display:"block"}}>
-                  {x.place || x.address}
-                </small>
-              )}
-
-              <small style={{
-                display:"inline-block",
-                marginTop:"5px",
-                color:x.status === "completed" ? "#17835c" : "#6747e8",
-                fontWeight:700
-              }}>
-                {x.status === "completed" ? "Realizado" : "Agendado"}
-              </small>
+                <span style={{
+                  display:"block",
+                  marginTop:"4px",
+                  fontSize:"16px",
+                  color:"#777f91"
+                }}>
+                  {x.time ? String(x.time).slice(0,5) : "Horário a confirmar"}
+                </span>
+              </div>
             </div>
 
             <div style={{
               display:"flex",
-              gap:"6px",
-              alignItems:"center",
               flexWrap:"wrap",
-              justifyContent:"flex-end",
-              flex:"0 0 auto"
+              gap:"8px",
+              marginTop:"14px"
             }}>
               <button
                 type="button"
@@ -706,7 +759,7 @@ function AppointmentsPage({ items, reload, setModal }) {
                 Editar
               </button>
 
-              {x.status==="upcoming" ? (
+              {x.status === "upcoming" ? (
                 <button
                   type="button"
                   className="soft success"
@@ -727,14 +780,13 @@ function AppointmentsPage({ items, reload, setModal }) {
 
               <button
                 type="button"
-                title={isExam ? "Excluir exame" : "Excluir consulta"}
-                aria-label={`Excluir ${x.title}`}
+                title="Excluir"
                 onClick={()=>removeAppointment(x)}
                 style={{
-                  width:"38px",
-                  height:"38px",
+                  width:"42px",
+                  height:"42px",
                   border:"1px solid #f1d7d9",
-                  borderRadius:"10px",
+                  borderRadius:"11px",
                   background:"#fff5f5",
                   color:"#c94a54",
                   display:"grid",
@@ -744,7 +796,109 @@ function AppointmentsPage({ items, reload, setModal }) {
                 <Trash2 size={17}/>
               </button>
             </div>
-          </div>
+
+            <div style={{
+              marginTop:"16px",
+              paddingTop:"14px",
+              borderTop:"1px solid #eef0f5",
+              width:"100%",
+              display:"grid",
+              gap:"9px"
+            }}>
+              {isExam && (
+                <>
+                  {x.requesting_doctor && (
+                    <div style={{color:"#687083",lineHeight:1.5}}>
+                      <b style={{color:"#394157"}}>Médico solicitante:</b>{" "}
+                      {x.requesting_doctor}
+                    </div>
+                  )}
+
+                  {x.requesting_specialty && (
+                    <div style={{color:"#687083",lineHeight:1.5}}>
+                      <b style={{color:"#394157"}}>Especialidade:</b>{" "}
+                      {x.requesting_specialty}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {!isExam && !isSupplies && (
+                <>
+                  {x.professional && (
+                    <div style={{color:"#687083",lineHeight:1.5}}>
+                      <b style={{color:"#394157"}}>Médico:</b>{" "}
+                      {x.professional}
+                    </div>
+                  )}
+
+                  {x.specialty && (
+                    <div style={{color:"#687083",lineHeight:1.5}}>
+                      <b style={{color:"#394157"}}>Especialidade:</b>{" "}
+                      {x.specialty}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {x.place && (
+                <div style={{color:"#687083",lineHeight:1.5}}>
+                  <b style={{color:"#394157"}}>
+                    {isSupplies ? "Local de retirada:" : "Local:"}
+                  </b>{" "}
+                  {x.place}
+                </div>
+              )}
+
+              {x.address && (
+                <div style={{color:"#687083",lineHeight:1.5}}>
+                  <b style={{color:"#394157"}}>Endereço:</b>{" "}
+                  {x.address}
+                </div>
+              )}
+
+              {x.notes && (
+                <div style={{
+                  color:"#687083",
+                  lineHeight:1.5,
+                  whiteSpace:"pre-wrap",
+                  overflowWrap:"anywhere"
+                }}>
+                  <b style={{color:"#394157"}}>
+                    {isSupplies ? "Itens / Obs:" : "Obs:"}
+                  </b>{" "}
+                  {x.notes}
+                </div>
+              )}
+
+              <div style={{
+                display:"flex",
+                alignItems:"center",
+                gap:"6px",
+                color:"#6747e8",
+                fontSize:"13px",
+                fontWeight:700
+              }}>
+                <Bell size={14}/>
+                Aviso: {reminderLabel(x.remind_minutes_before)}
+              </div>
+            </div>
+
+            <div style={{marginTop:"14px"}}>
+              <span style={{
+                display:"inline-flex",
+                alignItems:"center",
+                borderRadius:"999px",
+                padding:"6px 10px",
+                background:x.status === "completed" ? "#edf9f2" : "#f2efff",
+                color:x.status === "completed" ? "#17835c" : "#6747e8",
+                fontWeight:800,
+                fontSize:"13px"
+              }}>
+                {x.status === "completed" ? "Realizado" : "Agendado"}
+              </span>
+            </div>
+          </article>
         );
       })}
     </div>
@@ -1257,10 +1411,14 @@ function MorePage({
       Título:x.title || "",
       Especialidade:appointmentKind(x)==="exam"
         ? (x.requesting_specialty || "")
-        : (x.specialty || ""),
+        : appointmentKind(x)==="consultation"
+          ? (x.specialty || "")
+          : "",
       Profissional:appointmentKind(x)==="exam"
         ? (x.requesting_doctor || "")
-        : (x.professional || ""),
+        : appointmentKind(x)==="consultation"
+          ? (x.professional || "")
+          : "",
       Local:x.place || x.address || "",
       Status:x.status === "completed" ? "Realizado" : "Agendado",
       "Avisar antes (min)":Number(x.remind_minutes_before || 0)
@@ -1280,14 +1438,16 @@ function MorePage({
       x.title || "",
       appointmentKind(x)==="exam"
         ? (x.requesting_doctor || "")
-        : (x.professional || ""),
+        : appointmentKind(x)==="consultation"
+          ? (x.professional || "")
+          : "",
       x.place || x.address || "",
       x.status === "completed" ? "Realizado" : "Agendado"
     ]);
 
     exportPdfReport({
       fileName:reportFile("relatorio-consultas",reportMonth),
-      title:"Central de Cuidados - Relatório de consultas e exames",
+      title:"Central de Cuidados - Relatório de consultas, exames, insumos e remédios",
       subtitle:`Período: ${monthLabel}`,
       columns:["Tipo","Data","Hora","Consulta/Exame","Prof./Solic.","Local","Status"],
       rows,
@@ -1727,7 +1887,7 @@ function MorePage({
 
           {reportCard({
             icon:<CalendarDays size={19}/>,
-            title:"Consultas e exames",
+            title:"Consultas, exames e retiradas",
             description:`${appointmentsPeriod.length} compromisso(s)`,
             onPdf:exportAppointmentsPdf,
             onExcel:exportAppointmentsExcel
@@ -1902,6 +2062,7 @@ function AppointmentModal({item,presetType,onClose,reload}) {
   });
 
   const isExam = f.appointment_type === "exam";
+  const isSupplies = f.appointment_type === "supplies";
 
   const save = async e => {
     e.preventDefault();
@@ -1910,8 +2071,8 @@ function AppointmentModal({item,presetType,onClose,reload}) {
       ...f,
       remind_minutes_before:Number(f.remind_minutes_before),
       notification_sent:false,
-      professional:isExam ? null : f.professional,
-      specialty:isExam ? null : f.specialty,
+      professional:(!isExam && !isSupplies) ? f.professional : null,
+      specialty:(!isExam && !isSupplies) ? f.specialty : null,
       requesting_doctor:isExam ? f.requesting_doctor : null,
       requesting_specialty:isExam ? f.requesting_specialty : null
     };
@@ -1926,14 +2087,19 @@ function AppointmentModal({item,presetType,onClose,reload}) {
     onClose();
   };
 
-  return <Modal
-    title={
-      item
-        ? (isExam ? "Editar exame" : "Editar consulta médica")
-        : (isExam ? "Novo exame" : "Nova consulta médica")
-    }
-    onClose={onClose}
-  >
+  const modalTitle = item
+    ? isExam
+      ? "Editar exame"
+      : isSupplies
+        ? "Editar insumos e remédios"
+        : "Editar consulta médica"
+    : isExam
+      ? "Novo exame"
+      : isSupplies
+        ? "Novo agendamento de insumos e remédios"
+        : "Nova consulta médica";
+
+  return <Modal title={modalTitle} onClose={onClose}>
     <form onSubmit={save} className="form">
       <label>
         Tipo de agendamento
@@ -1946,19 +2112,28 @@ function AppointmentModal({item,presetType,onClose,reload}) {
         >
           <option value="consultation">Consulta médica</option>
           <option value="exam">Exame</option>
+          <option value="supplies">Insumos e remédios</option>
         </select>
       </label>
 
       <label>
-        {isExam ? "Nome do exame" : "Título / motivo da consulta"}
+        {isExam
+          ? "Nome do exame"
+          : isSupplies
+            ? "Insumo ou remédio / motivo da retirada"
+            : "Título / motivo da consulta"
+        }
+
         <input
           required
           value={f.title}
           onChange={e=>setF({...f,title:e.target.value})}
           placeholder={
             isExam
-              ? "Ex.: Eletrocardiograma"
-              : "Ex.: Retorno com cardiologista"
+              ? "Ex.: Ressonância magnética de crânio"
+              : isSupplies
+                ? "Ex.: Retirar fraldas e medicamentos"
+                : "Ex.: Retorno com neurologista"
           }
         />
       </label>
@@ -1989,14 +2164,14 @@ function AppointmentModal({item,presetType,onClose,reload}) {
             />
           </label>
         </>
-      ) : (
+      ) : !isSupplies ? (
         <>
           <label>
             Especialidade
             <input
               value={f.specialty}
               onChange={e=>setF({...f,specialty:e.target.value})}
-              placeholder="Ex.: Cardiologia"
+              placeholder="Ex.: Neurologia"
             />
           </label>
 
@@ -2005,11 +2180,11 @@ function AppointmentModal({item,presetType,onClose,reload}) {
             <input
               value={f.professional}
               onChange={e=>setF({...f,professional:e.target.value})}
-              placeholder="Ex.: Dra. Vanessa Nogueira Veloso"
+              placeholder="Ex.: Dra. Beatriz Brecht Albertini"
             />
           </label>
         </>
-      )}
+      ) : null}
 
       <div className="form-row">
         <label>
@@ -2033,11 +2208,15 @@ function AppointmentModal({item,presetType,onClose,reload}) {
       </div>
 
       <label>
-        Local
+        {isSupplies ? "Local de retirada / unidade" : "Local"}
         <input
           value={f.place}
           onChange={e=>setF({...f,place:e.target.value})}
-          placeholder="Ex.: AE Várzea do Carmo"
+          placeholder={
+            isSupplies
+              ? "Ex.: UBS, farmácia de alto custo..."
+              : "Ex.: Hospital, clínica, laboratório..."
+          }
         />
       </label>
 
@@ -2050,10 +2229,15 @@ function AppointmentModal({item,presetType,onClose,reload}) {
       </label>
 
       <label>
-        Observações
+        {isSupplies ? "Itens para retirar / observações" : "Observações"}
         <textarea
           value={f.notes}
           onChange={e=>setF({...f,notes:e.target.value})}
+          placeholder={
+            isSupplies
+              ? "Ex.: fraldas, Losartana 50 mg, Metformina 500 mg..."
+              : "Observações importantes sobre o agendamento."
+          }
         />
       </label>
 
@@ -2074,140 +2258,14 @@ function AppointmentModal({item,presetType,onClose,reload}) {
       </label>
 
       <button className="primary wide">
-        {item ? "Salvar alterações" : (isExam ? "Salvar exame" : "Salvar consulta")}
-      </button>
-    </form>
-  </Modal>;
-}
-
-function NoteModal({item,onClose,reload}) {
-  const [f,setF] = useState({
-    title:item?.title || "",
-    category:item?.category || "Informação importante",
-    occurred_date:item?.occurred_date || "",
-    hospital:item?.hospital || "",
-    doctor:item?.doctor || "",
-    specialty:item?.specialty || "",
-    details:item?.details || "",
-    pinned:Boolean(item?.pinned)
-  });
-
-  const save = async e => {
-    e.preventDefault();
-
-    const body = {
-      ...f,
-      occurred_date:f.occurred_date || null,
-      updated_at:new Date().toISOString()
-    };
-
-    if (item) {
-      await update("care_notes",item.id,body);
-    } else {
-      await insert("care_notes",body);
-    }
-
-    reload();
-    onClose();
-  };
-
-  return <Modal
-    title={item ? "Editar anotação" : "Nova anotação importante"}
-    onClose={onClose}
-  >
-    <form onSubmit={save} className="form">
-      <label>
-        Título
-        <input
-          required
-          value={f.title}
-          onChange={e=>setF({...f,title:e.target.value})}
-          placeholder="Ex.: Convulsões, AVC, Amputação"
-        />
-      </label>
-
-      <label>
-        Categoria
-        <select
-          value={f.category}
-          onChange={e=>setF({...f,category:e.target.value})}
-        >
-          {[
-            "Informação importante",
-            "Convulsão",
-            "AVC",
-            "Fratura",
-            "Cirurgia / Amputação",
-            "Internação",
-            "Diagnóstico",
-            "Alergia",
-            "Outro"
-          ].map(x=><option key={x}>{x}</option>)}
-        </select>
-      </label>
-
-      <label>
-        Data do ocorrido
-        <input
-          type="date"
-          value={f.occurred_date}
-          onChange={e=>setF({...f,occurred_date:e.target.value})}
-        />
-      </label>
-
-      <label>
-        Hospital / local
-        <input
-          value={f.hospital}
-          onChange={e=>setF({...f,hospital:e.target.value})}
-        />
-      </label>
-
-      <div className="form-row">
-        <label>
-          Médico
-          <input
-            value={f.doctor}
-            onChange={e=>setF({...f,doctor:e.target.value})}
-          />
-        </label>
-
-        <label>
-          Especialidade
-          <input
-            value={f.specialty}
-            onChange={e=>setF({...f,specialty:e.target.value})}
-          />
-        </label>
-      </div>
-
-      <label>
-        Informações / observações
-        <textarea
-          required
-          value={f.details}
-          onChange={e=>setF({...f,details:e.target.value})}
-          placeholder="Registre aqui todas as informações importantes."
-          style={{minHeight:"150px"}}
-        />
-      </label>
-
-      <label style={{
-        display:"flex",
-        alignItems:"center",
-        gap:"9px"
-      }}>
-        <input
-          type="checkbox"
-          checked={f.pinned}
-          onChange={e=>setF({...f,pinned:e.target.checked})}
-          style={{width:"18px",height:"18px"}}
-        />
-        Fixar esta anotação no topo
-      </label>
-
-      <button className="primary wide">
-        {item ? "Salvar alterações" : "Salvar anotação"}
+        {item
+          ? "Salvar alterações"
+          : isExam
+            ? "Salvar exame"
+            : isSupplies
+              ? "Salvar agendamento"
+              : "Salvar consulta"
+        }
       </button>
     </form>
   </Modal>;
